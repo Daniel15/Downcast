@@ -113,6 +113,8 @@ class Program
 		tag.AlbumArtists = new[] { item.Artist };
 		tag.Year = (uint)item.PublishedDateTime.Year;
 		tag.Description = item.Description;
+		tag.SetTextFrame("TDAT", item.PublishedDateTime.ToString("ddMM"));
+		tag.SetTextFrame("TIME", item.PublishedDateTime.ToString("HHmm"));
 		tag.SetTextFrame("WOAF", item.PageUrl.ToString());
 		tag.SetTextFrame("WOAS", item.PageUrl.ToString());
 		tag.Pictures = new TagLib.IPicture[]
