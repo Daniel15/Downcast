@@ -1,32 +1,31 @@
-﻿using System.Xml.Linq;
-using System.Xml.XPath;
+﻿using Downcast.Extensions;
 
 namespace Downcast;
 
+/// <summary>
+/// Represents an item from a feed
+/// </summary>
+/// <param name="Title">The title of the mix.</param>
+/// <param name="Description">A short description of the mix.</param>
+/// <param name="Artist">The artist.</param>
+/// <param name="PublishedDateTime">The date/time it was published.</param>
+/// <param name="PageUrl">A HTML page that describes it.</param>
+/// <param name="ImageUrl">An image URL (PNG or JPEG) that can be used as an album cover photo.</param>
+/// <param name="Mp3Url">A direct link to an MP3 file, if available.</param>
+/// <param name="FileExtension">The file extension to use on disk.</param>
 record FeedItem(
 	string Title,
 	string Description,
 	string Artist,
 	DateTime PublishedDateTime,
 	Uri PageUrl,
-	Uri ImageUrl,
-	Uri Mp3Url
+	Uri? ImageUrl,
+	Uri Mp3Url,
+	string FileExtension
 )
 {
-	public static FeedItem FromXml(XElement rawItem)
-	{
-		XNamespace itunes = "http://www.itunes.com/dtds/podcast-1.0.dtd";
-		return new FeedItem(
-			Title: rawItem.Element("title")!.Value,
-			Description: rawItem.Element("description")!.Value,
-			Artist: rawItem.Element(itunes + "author")!.Value,
-			PublishedDateTime: DateTime.Parse(rawItem.Element("pubDate")!.Value),
-			PageUrl: new Uri(rawItem.Element("link")!.Value),
-			ImageUrl: new Uri(rawItem.Element(itunes + "image")!.Attribute("href")!.Value),
-			Mp3Url: new Uri(rawItem
-				.XPathSelectElement("//enclosure[@type='audio/mpeg']")
-				!.Attribute("url")
-				!.Value)
-		);
-	}
+	/// <summary>
+	/// Cleans up the title. Currently just removes the artist name.
+	/// </summary>
+	public string CleanTitle => Title.StripPrefix(Artist + " - ");
 }

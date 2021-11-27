@@ -1,9 +1,12 @@
 ﻿using System.Text.RegularExpressions;
-using System.Xml.Linq;
+using Downcast.Extensions;
+using Downcast.Handlers;
 using McMaster.Extensions.CommandLineUtils;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
-using TagLib.Id3v2;
+using TagLib;
+using File = System.IO.File;
 
 namespace Downcast;
 
@@ -11,30 +14,37 @@ class Program
 {
 	private static readonly Regex _invalidPathChars = new("[^a-zA-Z0-9_ ]+", RegexOptions.Compiled);
 	private readonly IConfiguration _config;
-
-	private readonly HttpClient _client = new()
-	{
-		DefaultRequestHeaders =
-		{
-			{
-				"Accept",
-				"application/rss+xml, application/rdf+xml;q=0.8, application/atom+xml;q=0.6, application/xml;q=0.4, text/xml;q=0.4"
-			},
-			{"User-Agent", "Downcast/1.0 (https://d.sb/downcast)"},
-		},
-	};
+	private readonly HandlerFactory _handlerFactory;
+	private readonly HttpClient _client;
 
 	[Option(Description = "Just output what would be done, without actually doing it")]
 	public bool DryRun { get; } = false;
 
-	public static Task Main(string[] args)
-		=> Host.CreateDefaultBuilder(args).RunCommandLineApplicationAsync<Program>(args);
-
-	public Program(IConfiguration config)
+	public static Task<int> Main(string[] args)
 	{
-		_config = config;
+		return Host.CreateDefaultBuilder(args)
+			.ConfigureServices(services =>
+			{
+				services.AddSingleton<HandlerFactory>();
+				services.AddSingleton(new HttpClient
+				{
+					DefaultRequestHeaders =
+					{
+						{"User-Agent", "Downcast/1.0 (https://d.sb/downcast)"},
+					},
+				});
+			})
+			.RunCommandLineApplicationAsync<Program>(args);
 	}
 
+	public Program(IConfiguration config, HandlerFactory handlerFactory, HttpClient client)
+	{
+		_config = config;
+		_handlerFactory = handlerFactory;
+		_client = client;
+	}
+
+	// ReSharper disable once UnusedMember.Local
 	private async Task OnExecute()
 	{
 		var podcastConfigs = _config.GetSection("Podcasts").Get<IList<PodcastConfig>>();
@@ -48,23 +58,19 @@ class Program
 	async Task ProcessPodcastAsync(PodcastConfig config)
 	{
 		Console.WriteLine($"Processing {config.Name}");
-		await using var stream = await _client.GetStreamAsync(config.Url);
-		var xml = XElement.Load(stream);
-		var items = xml.Descendants("item");
-
-		foreach (var rawItem in items)
+		var handler = _handlerFactory.Create(config);
+		foreach (var item in await handler.ParseFeed(config))
 		{
-			var item = FeedItem.FromXml(rawItem);
-			await ProcessItemAsync(config, item);
+			await ProcessItemAsync(config, item, handler);
 		}
 	}
 
-	async Task ProcessItemAsync(PodcastConfig config, FeedItem item)
+	async Task ProcessItemAsync(PodcastConfig config, FeedItem item, IHandler handler)
 	{
-		var mp3Path = BuildPath(config, item.Title);
+		var mp3Path = BuildPath(config, item);
 		var alreadyExists = File.Exists(mp3Path);
 
-		Console.WriteLine($"{item.Title} by {item.Artist}");
+		Console.WriteLine($"{item.CleanTitle} by {item.Artist}");
 
 		if (alreadyExists)
 		{
@@ -83,8 +89,9 @@ class Program
 		Console.WriteLine("----> Downloading");
 
 		// Download MP3 and cover image in parallel
-		var tempMp3PathTask = DownloadToTempAsync(item.Mp3Url, "mp3");
-		var tempCoverPathTask = DownloadToTempAsync(
+		// TODO: Handle if ImageUrl is null
+		var tempMp3PathTask = handler.DownloadToTempAsync(item);
+		var tempCoverPathTask = _client.DownloadToTempAsync(
 			item.ImageUrl, 
 			Path.GetExtension(item.ImageUrl.LocalPath)
 		);
@@ -105,48 +112,56 @@ class Program
 	{
 		Console.WriteLine("----> Setting tags");
 		var tagFile = TagLib.File.Create(mp3Path);
-		tagFile.RemoveTags(TagLib.TagTypes.Id3v1);
-		var tag = (Tag)tagFile.GetTag(TagLib.TagTypes.Id3v2, create: true);
-		tag.Title = item.Title;
-		tag.Album = item.Title;
-		tag.Performers = new[] { item.Artist };
-		tag.AlbumArtists = new[] { item.Artist };
-		tag.Year = (uint)item.PublishedDateTime.Year;
-		tag.Description = item.Description;
-		tag.SetTextFrame("TDAT", item.PublishedDateTime.ToString("ddMM"));
-		tag.SetTextFrame("TIME", item.PublishedDateTime.ToString("HHmm"));
-		tag.SetTextFrame("WOAF", item.PageUrl.ToString());
-		tag.SetTextFrame("WOAS", item.PageUrl.ToString());
-		tag.Pictures = new TagLib.IPicture[]
+		tagFile.RemoveTags(TagTypes.Id3v1);
+
+		var tagType = tagFile switch
 		{
-			new TagLib.Picture(coverPath)
+			TagLib.Mpeg4.File => TagTypes.Apple,
+			TagLib.Mpeg.AudioFile => TagTypes.Id3v2,
+			_ => throw new Exception($"Unsupported file type {tagFile.GetType().Name}")
 		};
+
+		var tag = tagFile.GetTag(tagType, create: true);
+		tag.Album = item.CleanTitle;
+		tag.AlbumArtists = new[] { item.Artist };
+		tag.Description = item.Description;
+		if (tag.Genres.Length == 1 && tag.Genres[0] == "Blues")
+		{
+			tag.Genres = Array.Empty<string>();
+		}
+		tag.Performers = new[] { item.Artist };
+		tag.Pictures = new IPicture[]
+		{
+			new Picture(coverPath)
+		};
+		tag.Title = item.CleanTitle;
+		tag.Year = (uint)item.PublishedDateTime.Year;
+
+		if (tag is TagLib.Id3v2.Tag id3Tag)
+		{
+			id3Tag.SetTextFrame("TDAT", item.PublishedDateTime.ToString("ddMM"));
+			id3Tag.SetTextFrame("TIME", item.PublishedDateTime.ToString("HHmm"));
+			id3Tag.SetTextFrame("WOAF", item.PageUrl.ToString());
+			id3Tag.SetTextFrame("WOAS", item.PageUrl.ToString());
+		}
+
+		if (tag is TagLib.Mpeg4.AppleTag appleTag)
+		{
+			appleTag.SetText("day", item.PublishedDateTime.ToString("yyyy-MM-dd"));
+		}
+
 		tagFile.Save();
 	}
 
-	async Task<string> DownloadToTempAsync(Uri url, string extension)
-	{
-		var tempFile = Path.Combine(
-			Path.GetTempPath(), 
-			Path.ChangeExtension(Guid.NewGuid().ToString(), extension)
-		);
-		//Console.WriteLine($"----> Writing {tempFile}");
-
-		await using var downloadStream = await _client.GetStreamAsync(url);
-		await using var fileStream = File.Create(tempFile);
-		await downloadStream.CopyToAsync(fileStream);
-		return tempFile;
-	}
-
-	string BuildPath(PodcastConfig config, string episodeTitle)
+	string BuildPath(PodcastConfig config, FeedItem item)
 	{
 		var dir = config.Directory;
-		var episodeFileName = _invalidPathChars.Replace(episodeTitle, "");
+		var episodeFileName = _invalidPathChars.Replace(item.CleanTitle, "");
 		if (config.OneFolderPerEpisode)
 		{
 			dir = Path.Combine(dir, episodeFileName);
 		}
 
-		return Path.Combine(dir, episodeFileName + ".mp3");
+		return Path.Combine(dir, episodeFileName + "." + item.FileExtension);
 	}
 }

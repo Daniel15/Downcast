@@ -1,6 +1,11 @@
 ﻿# Downcast
 
-This is a downloader for podcast-style feeds, for example from Soundcloud or iTunes. It sorts them into a directory structure suitable for use with Plex (one folder per episode).
+This is a downloader for podcast-style feeds, for example from Soundcloud or iTunes, often used by DJs to share their mixes. It sorts them into a directory structure suitable for use with Plex (one folder per episode).
+
+# Supported Providers
+
+ - Mixcloud
+ - Any provider that uses RSS feeds (eg. Soundcloud, iTunes, etc)
 
 # Usage
 
