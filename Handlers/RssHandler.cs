@@ -28,7 +28,7 @@ class RssHandler : IHandler
 			PageUrl: new Uri(rawItem.Element("link")!.Value),
 			ImageUrl: new Uri(rawItem.Element(itunesNs + "image")!.Attribute("href")!.Value),
 			Mp3Url: new Uri(rawItem
-				.XPathSelectElement("//enclosure[@type='audio/mpeg']")
+				.XPathSelectElement("./enclosure[@type='audio/mpeg']")
 				!.Attribute("url")
 				!.Value),
 			FileExtension: "mp3"
