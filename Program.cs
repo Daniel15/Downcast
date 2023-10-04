@@ -151,6 +151,8 @@ class Program
 		}
 
 		tagFile.Save();
+
+		File.SetLastWriteTime(mp3Path, item.PublishedDateTime);
 	}
 
 	string BuildPath(PodcastConfig config, FeedItem item)
