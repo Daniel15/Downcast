@@ -2,6 +2,9 @@
   "profiles": {
     "Downcast": {
       "commandName": "Project"
+    },
+    "Docker": {
+      "commandName": "Docker"
     }
   }
 }
